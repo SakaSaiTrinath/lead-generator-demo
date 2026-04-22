@@ -141,6 +141,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=True,
         help="Run browser headless (default: True).",
     )
+    parser.add_argument(
+        "--search-engine",
+        choices=sorted(SEARCH_ENGINES.keys()),
+        default="duckduckgo",
+        help=(
+            "Fallback search engine when the target has no detectable "
+            "search input. DuckDuckGo is default because Google now "
+            "frequently CAPTCHAs headless Chromium."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -216,17 +226,45 @@ def try_site_search(page: Page, root_url: str, keyword: str) -> bool:
         return False
 
 
-def google_site_search(page: Page, domain: str, keyword: str) -> bool:
-    """Fallback: run a Google ``site:<domain> <keyword>`` search."""
-    query = f"site:{domain} {keyword}"
-    url = f"https://www.google.com/search?q={quote_plus(query)}"
+# Fallback search-engine URL templates. We prefer DuckDuckGo because
+# Google now frequently serves CAPTCHAs to headless Chromium, which
+# breaks the entire crawl. DDG's html-only endpoint has no JS gating,
+# no consent wall, and predictable markup.
+SEARCH_ENGINES: dict[str, str] = {
+    "duckduckgo": "https://html.duckduckgo.com/html/?q={query}",
+    "google": "https://www.google.com/search?q={query}",
+}
+
+
+def fallback_search(
+    page: Page,
+    domain: str,
+    keyword: str,
+    engine: str = "duckduckgo",
+) -> bool:
+    """Run a ``site:<domain> <keyword>`` search on a fallback engine.
+
+    Returns True on successful navigation. Supported engines are listed
+    in ``SEARCH_ENGINES``.
+    """
+    if engine not in SEARCH_ENGINES:
+        raise ValueError(f"unknown search engine: {engine!r}")
+    query = quote_plus(f"site:{domain} {keyword}")
+    url = SEARCH_ENGINES[engine].format(query=query)
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
     except PlaywrightTimeoutError:
         return False
-    _maybe_accept_google_consent(page)
+    if engine == "google":
+        _maybe_accept_google_consent(page)
     polite_sleep(1.5, 2.5)
     return True
+
+
+# Backwards-compatible alias used by older tests.
+def google_site_search(page: Page, domain: str, keyword: str) -> bool:
+    """Deprecated shim; prefer ``fallback_search(..., engine='google')``."""
+    return fallback_search(page, domain, keyword, engine="google")
 
 
 def _maybe_accept_google_consent(page: Page) -> None:
@@ -269,7 +307,7 @@ def collect_links(page: Page, domain: str | None, google_mode: bool) -> list[str
         seen.add(href)
         low = href.lower()
         if google_mode:
-            real = _unwrap_google_redirect(href)
+            real = _unwrap_search_redirect(href)
             if real is None:
                 continue
             out.append(real)
@@ -282,28 +320,42 @@ def collect_links(page: Page, domain: str | None, google_mode: bool) -> list[str
     return out
 
 
-def _unwrap_google_redirect(href: str) -> str | None:
-    """Turn a Google result href into the real destination, or None to skip.
+def _unwrap_search_redirect(href: str) -> str | None:
+    """Turn a SERP result href into a real external destination, or None.
 
-    Google wraps many organic results in ``/url?q=<destination>&...``. The
-    earlier version filtered anything with ``google.`` in the host, which
-    also dropped wrapped results and left us with zero seeds. This
-    function pulls the ``q`` param out of wrappers while still filtering
-    true Google-internal links (maps, support, policies, ads, etc.).
+    Handles Google's ``/url?q=<dest>`` wrapper and DuckDuckGo's
+    ``/l/?uddg=<dest>`` wrapper. Genuine engine-internal links
+    (policies, maps, ads that point back at the engine) are dropped.
+    Direct http(s) links are passed through unchanged.
     """
     parsed = urlparse(href)
     host = parsed.netloc.lower()
+
+    # Google /url?q=<dest>
     if "google." in host and parsed.path == "/url":
-        qs = parse_qs(parsed.query)
-        candidate = (qs.get("q") or [""])[0]
+        candidate = (parse_qs(parsed.query).get("q") or [""])[0]
         if candidate.startswith("http") and "google." not in urlparse(candidate).netloc:
             return candidate
         return None
-    if "google." in host:
+
+    # DuckDuckGo /l/?uddg=<dest> (the html endpoint wraps all results).
+    if "duckduckgo.com" in host and parsed.path.startswith("/l"):
+        candidate = (parse_qs(parsed.query).get("uddg") or [""])[0]
+        if candidate.startswith("http") and "duckduckgo.com" not in urlparse(candidate).netloc:
+            return candidate
         return None
+
+    # Any other engine-internal link.
+    if "google." in host or "duckduckgo.com" in host:
+        return None
+
     if href.startswith("http"):
         return href
     return None
+
+
+# Backwards-compatible alias.
+_unwrap_google_redirect = _unwrap_search_redirect
 
 
 def _clean_email(raw: str) -> str:
@@ -498,6 +550,7 @@ def run(
     max_results: int,
     depth: int,
     headless: bool,
+    search_engine: str = "duckduckgo",
 ) -> list[Lead]:
     """Run the full agent pipeline and return collected leads."""
     root_url, domain = normalize_site(site)
@@ -519,10 +572,14 @@ def run(
         google_mode = False
         if not try_site_search(page, root_url, keyword):
             console.log(
-                "[yellow]No usable search input — falling back to Google site: search.[/yellow]"
+                f"[yellow]No usable search input — falling back to "
+                f"{search_engine} site: search.[/yellow]"
             )
-            if not google_site_search(page, domain, keyword):
-                console.log("[red]Google fallback failed. Nothing to crawl.[/red]")
+            if not fallback_search(page, domain, keyword, engine=search_engine):
+                console.log(
+                    f"[red]{search_engine} fallback failed. "
+                    f"Nothing to crawl.[/red]"
+                )
                 browser.close()
                 return leads
             google_mode = True
@@ -595,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
             max_results=args.max_results,
             depth=args.depth,
             headless=args.headless,
+            search_engine=args.search_engine,
         )
     except KeyboardInterrupt:
         console.log("[yellow]Interrupted by user.[/yellow]")

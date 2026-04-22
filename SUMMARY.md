@@ -114,6 +114,13 @@ python agent/lead_agent.py \
     --site "yellowpages.ca" \
     --max-results 25 \
     --depth 3
+
+# Force Google as the fallback engine (default is duckduckgo, because
+# Google frequently CAPTCHAs headless Chromium)
+python agent/lead_agent.py \
+    --keyword "animation studio" \
+    --site "clutch.co" \
+    --search-engine google
 ```
 
 ---

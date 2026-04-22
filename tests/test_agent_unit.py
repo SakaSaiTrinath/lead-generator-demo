@@ -21,6 +21,21 @@ class TestParseArgs:
         assert ns.max_results == 20
         assert ns.depth == 2
         assert ns.headless is True
+        assert ns.search_engine == "duckduckgo"
+
+    def test_search_engine_choices(self):
+        ns = agent.parse_args([
+            "--keyword", "k", "--site", "s.com",
+            "--search-engine", "google",
+        ])
+        assert ns.search_engine == "google"
+
+    def test_search_engine_rejects_unknown(self):
+        with pytest.raises(SystemExit):
+            agent.parse_args([
+                "--keyword", "k", "--site", "s.com",
+                "--search-engine", "yahoo",
+            ])
 
     def test_depth_capped_to_3(self):
         with pytest.raises(SystemExit):
@@ -179,6 +194,18 @@ class TestPoliteSleep:
         monkeypatch.setattr(time, "sleep", lambda s: captured.update(seconds=s))
         agent.polite_sleep(1.5, 3.5)
         assert 1.5 <= captured["seconds"] <= 3.5
+
+
+class TestSearchEngines:
+    def test_registry_has_expected_engines(self):
+        assert "duckduckgo" in agent.SEARCH_ENGINES
+        assert "google" in agent.SEARCH_ENGINES
+        for template in agent.SEARCH_ENGINES.values():
+            assert "{query}" in template
+
+    def test_fallback_search_raises_on_unknown_engine(self):
+        with pytest.raises(ValueError):
+            agent.fallback_search(page=None, domain="x.com", keyword="k", engine="yahoo")
 
 
 # ---------- main() behavior ----------

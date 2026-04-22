@@ -175,8 +175,14 @@ def run_scraper(keyword: str, location: str, max_results: int, headless: bool) -
     return ok_
 
 
-def run_agent(keyword: str, site: str, max_results: int, depth: int, headless: bool) -> bool:
-    step(f"Agent: '{keyword}' on {site} (max {max_results}, depth {depth})")
+def run_agent(
+    keyword: str, site: str, max_results: int,
+    depth: int, headless: bool, search_engine: str,
+) -> bool:
+    step(
+        f"Agent: '{keyword}' on {site} "
+        f"(max {max_results}, depth {depth}, engine {search_engine})"
+    )
     started = time.time()
     rc = _run_cmd(
         [
@@ -186,6 +192,7 @@ def run_agent(keyword: str, site: str, max_results: int, depth: int, headless: b
             "--max-results", str(max_results),
             "--depth", str(depth),
             "--headless", "true" if headless else "false",
+            "--search-engine", search_engine,
         ],
         timeout=600,
     )
@@ -235,6 +242,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Cap per tool (default: 3, keeps the smoke <1 min each)")
     p.add_argument("--depth", type=int, default=2, choices=[1, 2, 3],
                    help="Agent crawl depth (default: 2)")
+    p.add_argument("--search-engine", default="duckduckgo",
+                   choices=["duckduckgo", "google"],
+                   help="Fallback search engine for the agent (default: duckduckgo)")
     p.add_argument("--scraper-only", action="store_true")
     p.add_argument("--agent-only", action="store_true")
     p.add_argument("--headful", action="store_true",
@@ -264,7 +274,10 @@ def main(argv: list[str] | None = None) -> int:
     if not args.scraper_only:
         results.append((
             "agent",
-            run_agent(args.agent_keyword, args.site, args.max_results, args.depth, headless),
+            run_agent(
+                args.agent_keyword, args.site, args.max_results,
+                args.depth, headless, args.search_engine,
+            ),
         ))
 
     step("summary")

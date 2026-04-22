@@ -115,29 +115,48 @@ class TestCollectLinks:
         assert not any("google.com" in l for l in links)
 
 
-class TestUnwrapGoogleRedirect:
-    def test_unwraps_q_param(self):
-        assert agent._unwrap_google_redirect(
+class TestUnwrapSearchRedirect:
+    def test_unwraps_google_q_param(self):
+        assert agent._unwrap_search_redirect(
             "https://www.google.com/url?q=https://studio.example/&sa=U&ved=abc"
         ) == "https://studio.example/"
 
+    def test_unwraps_ddg_uddg_param(self):
+        assert agent._unwrap_search_redirect(
+            "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fstudio.example%2Fabout&rut=x"
+        ) == "https://studio.example/about"
+
     def test_plain_http_passthrough(self):
-        assert agent._unwrap_google_redirect(
+        assert agent._unwrap_search_redirect(
             "https://studio.example/profile"
         ) == "https://studio.example/profile"
 
     def test_google_internal_dropped(self):
-        assert agent._unwrap_google_redirect(
+        assert agent._unwrap_search_redirect(
             "https://www.google.com/policies"
         ) is None
 
+    def test_ddg_internal_dropped(self):
+        assert agent._unwrap_search_redirect(
+            "https://duckduckgo.com/settings"
+        ) is None
+
     def test_wrapped_to_google_is_dropped(self):
-        assert agent._unwrap_google_redirect(
+        assert agent._unwrap_search_redirect(
             "https://www.google.com/url?q=https://www.google.com/ads"
         ) is None
 
+    def test_wrapped_to_ddg_is_dropped(self):
+        assert agent._unwrap_search_redirect(
+            "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fduckduckgo.com%2Fsomewhere"
+        ) is None
+
     def test_non_http_dropped(self):
-        assert agent._unwrap_google_redirect("/relative") is None
+        assert agent._unwrap_search_redirect("/relative") is None
+
+    def test_backwards_compat_alias(self):
+        # The old name still works so external callers don't break.
+        assert agent._unwrap_google_redirect is agent._unwrap_search_redirect
 
 
 # ---------- try_site_search (real DOM) ----------
