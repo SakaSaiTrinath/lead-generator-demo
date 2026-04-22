@@ -61,6 +61,22 @@ Python 3.10+ is required.
 Copy `.env.example` to `.env` if you want to record defaults — the scripts
 themselves take config via CLI flags.
 
+### Live smoke test
+
+Once installed, run both tools end-to-end against real targets:
+
+```bash
+python scripts/live_smoke.py                 # small run (3 leads each)
+python scripts/live_smoke.py --headful       # watch the browser
+python scripts/live_smoke.py --scraper-only  # only the Google Maps tool
+python scripts/live_smoke.py --agent-only --site yellowpages.ca
+```
+
+The script does a pre-flight (Python, deps, Chromium), runs each tool
+with a small `--max-results`, and validates that a timestamped CSV with
+the expected columns and at least one row landed in `output/`. Prints a
+human verification checklist at the end.
+
 ---
 
 ## 3. Example CLI commands
