@@ -200,8 +200,10 @@ def extract_lead_from_detail(page: Page, maps_url: str) -> Lead:
     """Extract structured data from an open Google Maps detail panel."""
     lead = Lead(google_maps_url=maps_url)
 
-    # Name lives in an h1 at the top of the detail panel.
-    lead.company_name = _text_or_empty(page, "h1.DUwDvf") or _text_or_empty(page, "h1")
+    # Name lives in the detail panel's h1.DUwDvf specifically; the bare
+    # <h1> fallback picks up the sidebar "Results" header when navigation
+    # hasn't settled, which produced phantom rows in earlier versions.
+    lead.company_name = _text_or_empty(page, "h1.DUwDvf")
 
     # Category is in a button that opens a taxonomy picker.
     lead.category = _text_or_empty(page, "button[jsaction*='category']")
@@ -277,8 +279,18 @@ def scrape(keyword: str, location: str, max_results: int, headless: bool) -> lis
         for idx, card in enumerate(cards, start=1):
             try:
                 card.scroll_into_view_if_needed()
+                before_url = page.url
                 card.click()
-                page.wait_for_selector("h1", timeout=10_000)
+                # Wait for Google's client-side route to swap to the detail
+                # panel. Both conditions matter: a URL change alone can fire
+                # before the panel renders, and the detail-only h1 class
+                # avoids matching the sidebar "Results" header that shows
+                # while the previous panel is still on screen.
+                page.wait_for_url(
+                    lambda u: u != before_url and "/maps/place/" in u,
+                    timeout=10_000,
+                )
+                page.wait_for_selector("h1.DUwDvf", timeout=10_000)
                 polite_sleep()
                 maps_url = page.url
                 lead = extract_lead_from_detail(page, maps_url)

@@ -40,6 +40,18 @@ class TestExtractLeadFromDetail:
         assert lead.address == ""
         assert lead.category == ""
 
+    def test_results_sidebar_not_treated_as_company(self, page, fixture_server):
+        """Regression: a bare <h1>Results</h1> sidebar must not yield a lead.
+
+        Earlier versions fell back to the generic <h1> selector and
+        recorded a phantom "Results" row whenever Google's client-side
+        navigation hadn't settled before we read the DOM.
+        """
+        url = f"{fixture_server}/gmaps_results_sidebar.html"
+        page.goto(url)
+        lead = gms.extract_lead_from_detail(page, url)
+        assert lead.company_name == ""
+
 
 # ---------- collect_result_cards / feed scrolling ----------
 

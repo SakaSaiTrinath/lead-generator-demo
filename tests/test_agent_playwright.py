@@ -88,6 +88,57 @@ class TestCollectLinks:
         assert any(l.startswith("https://studio-two.example") for l in links)
         assert not any("google.com" in l for l in links)
 
+    def test_google_mode_unwraps_redirect_links(self, page):
+        """Regression: real Google SERPs wrap results in /url?q=...
+
+        Previously these were dropped because the host contains 'google.'
+        leaving us with zero seeds when the agent fell back to a
+        ``site:`` search.
+        """
+        # Use absolute hrefs so that page.eval_on_selector_all returns
+        # the wrapped URL verbatim (instead of resolving /url?q=... against
+        # about:blank, which would mangle the test).
+        page.set_content(
+            """
+            <html><body>
+              <a href="https://www.google.com/url?q=https://studio-one.example/&sa=U">One</a>
+              <a href="https://www.google.com/url?q=https://studio-two.example/about&sa=U">Two</a>
+              <a href="https://www.google.com/url?q=https://www.google.com/ads">unwrap-to-google</a>
+              <a href="https://www.google.com/search?q=...">internal</a>
+            </body></html>
+            """
+        )
+        links = agent.collect_links(page, domain=None, google_mode=True)
+        assert any(l.startswith("https://studio-one.example") for l in links)
+        assert any(l.startswith("https://studio-two.example") for l in links)
+        # An unwrap that itself points back at google.* is still dropped.
+        assert not any("google.com" in l for l in links)
+
+
+class TestUnwrapGoogleRedirect:
+    def test_unwraps_q_param(self):
+        assert agent._unwrap_google_redirect(
+            "https://www.google.com/url?q=https://studio.example/&sa=U&ved=abc"
+        ) == "https://studio.example/"
+
+    def test_plain_http_passthrough(self):
+        assert agent._unwrap_google_redirect(
+            "https://studio.example/profile"
+        ) == "https://studio.example/profile"
+
+    def test_google_internal_dropped(self):
+        assert agent._unwrap_google_redirect(
+            "https://www.google.com/policies"
+        ) is None
+
+    def test_wrapped_to_google_is_dropped(self):
+        assert agent._unwrap_google_redirect(
+            "https://www.google.com/url?q=https://www.google.com/ads"
+        ) is None
+
+    def test_non_http_dropped(self):
+        assert agent._unwrap_google_redirect("/relative") is None
+
 
 # ---------- try_site_search (real DOM) ----------
 

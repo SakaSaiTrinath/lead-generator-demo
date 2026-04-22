@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
 from playwright.sync_api import (
     Browser,
@@ -269,11 +269,10 @@ def collect_links(page: Page, domain: str | None, google_mode: bool) -> list[str
         seen.add(href)
         low = href.lower()
         if google_mode:
-            # Filter to external result URLs; skip Google-internal links.
-            if "google." in urlparse(href).netloc:
+            real = _unwrap_google_redirect(href)
+            if real is None:
                 continue
-            if href.startswith("http"):
-                out.append(href)
+            out.append(real)
         else:
             parsed = urlparse(href)
             if domain and parsed.netloc and domain not in parsed.netloc:
@@ -281,6 +280,30 @@ def collect_links(page: Page, domain: str | None, google_mode: bool) -> list[str
             if any(hint in low for hint in PROFILE_LINK_HINTS):
                 out.append(href)
     return out
+
+
+def _unwrap_google_redirect(href: str) -> str | None:
+    """Turn a Google result href into the real destination, or None to skip.
+
+    Google wraps many organic results in ``/url?q=<destination>&...``. The
+    earlier version filtered anything with ``google.`` in the host, which
+    also dropped wrapped results and left us with zero seeds. This
+    function pulls the ``q`` param out of wrappers while still filtering
+    true Google-internal links (maps, support, policies, ads, etc.).
+    """
+    parsed = urlparse(href)
+    host = parsed.netloc.lower()
+    if "google." in host and parsed.path == "/url":
+        qs = parse_qs(parsed.query)
+        candidate = (qs.get("q") or [""])[0]
+        if candidate.startswith("http") and "google." not in urlparse(candidate).netloc:
+            return candidate
+        return None
+    if "google." in host:
+        return None
+    if href.startswith("http"):
+        return href
+    return None
 
 
 def _clean_email(raw: str) -> str:
