@@ -34,10 +34,14 @@ submit the keyword, and falls back to a Google `site:<domain> <keyword>`
 query if no search box is detectable. It then BFS-crawls links that look
 like company profiles up to 3 levels deep, extracting name, website,
 email (via regex), phone (from `tel:` links, then regex), location, and
-a 200-char description. When a profile lists a company website but no
-email, the agent takes one extra hop to that site and pulls an email
-from there. Search / result-list URLs are filtered out so directory
-search pages aren't scraped as if they were companies. Best for
+a 200-char description. When the directory wraps the "Website" button
+through an on-domain redirect (e.g. `yellowpages.ca/gourl/...`), the
+agent follows that redirect in a sub-tab to recover the real off-site
+URL. Whenever a profile yields a website but is missing email or phone,
+the agent takes one extra hop to that site (homepage + a few common
+contact paths) and fills both fields from `mailto:` / `tel:` links or
+a body regex. Search / result-list / category-landing URLs are filtered
+out so they aren't scraped as if they were companies. Best for
 directory-style sources that surface contact info Google Maps doesn't.
 
 ---

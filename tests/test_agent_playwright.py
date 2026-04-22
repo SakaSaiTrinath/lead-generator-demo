@@ -169,6 +169,72 @@ class TestHarvestEmailFromWebsite:
             context.close()
 
 
+class TestHarvestContactFromWebsite:
+    def test_returns_email_and_phone(self, browser, fixture_server):
+        """Both fields populated when the site exposes mailto: AND tel:."""
+        context = browser.new_context(locale="en-US")
+        try:
+            contact = agent.harvest_contact_from_website(
+                context, f"{fixture_server}/business_home.html",
+            )
+        finally:
+            context.close()
+        assert contact.email == "hello@pixelgrovefx.com"
+        assert contact.phone == "+14165167863"
+
+    def test_empty_when_site_has_neither(self, browser, fixture_server):
+        context = browser.new_context(locale="en-US")
+        try:
+            contact = agent.harvest_contact_from_website(
+                context, f"{fixture_server}/business_no_email.html",
+            )
+        finally:
+            context.close()
+        assert contact.email == ""
+        assert contact.phone == ""
+
+
+class TestResolveRedirectUrl:
+    def test_follows_meta_refresh(self, browser, fixture_server):
+        """A YP-style redirect should resolve to the final destination URL.
+
+        We pass an intentionally fake ``source_domain`` so the function
+        treats the fixture server's host as off-domain and returns the URL.
+        """
+        context = browser.new_context(locale="en-US")
+        try:
+            final = agent.resolve_redirect_url(
+                context,
+                f"{fixture_server}/gourl/pixelgrove.html",
+                source_domain="pretend-this-is-yp.test",
+            )
+        finally:
+            context.close()
+        assert final.endswith("/business_home.html")
+
+    def test_returns_empty_when_redirect_lands_on_same_domain(
+        self, browser, fixture_server,
+    ):
+        """If the redirect bounces back to the source domain, return ''.
+
+        In production this means the directory's redirect didn't actually
+        leave the directory — there's no real off-site URL to capture.
+        """
+        from urllib.parse import urlparse
+
+        context = browser.new_context(locale="en-US")
+        try:
+            same_domain = urlparse(fixture_server).netloc
+            final = agent.resolve_redirect_url(
+                context,
+                f"{fixture_server}/gourl/pixelgrove.html",
+                source_domain=same_domain,
+            )
+        finally:
+            context.close()
+        assert final == ""
+
+
 class TestScrapeProfilePageSkipsSearchPages:
     def test_search_url_returns_empty_lead(self, page, monkeypatch):
         """A /search/ URL must never be opened and must yield an empty lead."""

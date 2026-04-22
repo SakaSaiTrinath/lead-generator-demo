@@ -159,6 +159,9 @@ class TestLooksLikeSearchPage:
             # yellowpages.ca category-index landing (numeric-only path)
             "https://www.yellowpages.ca/business/00885000.html",
             "https://www.yellowpages.ca/business/12345.html?lang=en",
+            # yellowpages.ca province-scoped category landing
+            "https://www.yellowpages.ca/business/ON/00885400.html",
+            "https://www.yellowpages.ca/business/QC/12345.html",
         ],
     )
     def test_truthy(self, url):
@@ -189,6 +192,9 @@ class TestSearchNameRe:
             # yellowpages.ca category-landing h1s
             "Film Studios & Producers near you",
             "VFX Studios Near Me",
+            # province-scoped category prompt
+            "Find Film Special Effects in:",
+            "Find Animation Studios in:",
         ],
     )
     def test_matches(self, name):
@@ -204,6 +210,51 @@ class TestSearchNameRe:
     )
     def test_non_matches(self, name):
         assert agent.SEARCH_NAME_RE.search(name) is None
+
+
+# ---------- _looks_like_website_redirect ----------
+
+class TestLooksLikeWebsiteRedirect:
+    @pytest.mark.parametrize(
+        "url, source",
+        [
+            ("https://www.yellowpages.ca/gourl/foo", "www.yellowpages.ca"),
+            ("https://yellowpages.ca/gourl/foo?x=1", "yellowpages.ca"),
+            ("https://example.com/r/abc123", "example.com"),
+            ("https://example.com/redir?u=...", "example.com"),
+            ("https://example.com/out/somewhere", "example.com"),
+        ],
+    )
+    def test_truthy(self, url, source):
+        assert agent._looks_like_website_redirect(url, source) is True
+
+    @pytest.mark.parametrize(
+        "url, source",
+        [
+            # Off-domain — handled by the direct off-domain path, not by us.
+            ("https://realsite.com/", "yellowpages.ca"),
+            # Same domain but path doesn't look like a redirect.
+            ("https://www.yellowpages.ca/about", "www.yellowpages.ca"),
+            # Garbage in.
+            ("not a url", "yellowpages.ca"),
+        ],
+    )
+    def test_falsy(self, url, source):
+        assert agent._looks_like_website_redirect(url, source) is False
+
+
+# ---------- WebsiteContact dataclass ----------
+
+class TestWebsiteContact:
+    def test_defaults_empty(self):
+        wc = agent.WebsiteContact()
+        assert wc.email == ""
+        assert wc.phone == ""
+
+    def test_can_be_partially_populated(self):
+        wc = agent.WebsiteContact(email="a@b.com")
+        assert wc.email == "a@b.com"
+        assert wc.phone == ""
 
 
 # ---------- Lead dataclass / FIELDS ----------

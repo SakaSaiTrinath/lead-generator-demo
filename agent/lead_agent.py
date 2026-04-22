@@ -87,10 +87,11 @@ SEARCH_PATH_HINTS = (
     "/listings/",
 )
 # yellowpages.ca-style category landing pages live at /business/<digits>.html
-# — they look like profile URLs to a SERP but render "Please enter your
-# search location" and a category name, not a real business.
+# or /business/<province-or-country-code>/<digits>.html — they look like
+# profile URLs to a SERP but render "Please enter your search location"
+# and a category name, not a real business.
 _CATEGORY_ID_URL_RE = re.compile(
-    r"/business/\d+\.html(?:$|[?#])",
+    r"/business/(?:[A-Z]+/)?\d+\.html(?:$|[?#])",
     re.IGNORECASE,
 )
 # h1/title text that indicates the page is a search-result or category
@@ -98,8 +99,26 @@ _CATEGORY_ID_URL_RE = re.compile(
 SEARCH_NAME_RE = re.compile(
     r"\(\s*\d+\s+Result[a-zA-Z()\s]*\)"
     r"|\bSearch\s+Results\b"
-    r"|\bnear\s+(?:you|me)\b",
+    r"|\bnear\s+(?:you|me)\b"
+    r"|^\s*Find\s+\w"            # "Find Film Special Effects in:"
+    r"|:\s*$",                    # any name ending with ':' is a prompt
     re.IGNORECASE,
+)
+# Same-domain links whose path matches one of these are usually
+# directory-side redirects to the real off-site URL (e.g. yellowpages.ca
+# wraps every "Website" button through /gourl/...). We follow them in a
+# sub-tab to recover the actual destination.
+WEBSITE_REDIRECT_HINTS = (
+    "/gourl",
+    "/gourl/",
+    "/redir",
+    "/redirect",
+    "/r/",
+    "/out/",
+    "/goto/",
+    "/website/",
+    "/url",
+    "/click",
 )
 # Phrases on links that typically indicate a company-profile page.
 PROFILE_LINK_HINTS = (
@@ -502,30 +521,104 @@ def extract_company_name(page: Page) -> str:
     return ""
 
 
+def _looks_like_website_redirect(url: str, current_domain: str) -> bool:
+    """True if ``url`` is on ``current_domain`` and looks like a redirect."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if not parsed.netloc or parsed.netloc != current_domain:
+        return False
+    low = parsed.path.lower()
+    return any(hint in low for hint in WEBSITE_REDIRECT_HINTS)
+
+
+def resolve_redirect_url(context, redirect_url: str, source_domain: str) -> str:
+    """Open ``redirect_url`` in a sub-tab and return the final off-domain URL.
+
+    Used to recover real business websites from directory wrappers like
+    ``yellowpages.ca/gourl/...``. Handles meta-refresh and JS redirects
+    (waits briefly for the URL to change after the initial DCL). Returns
+    '' when the redirect lands back on ``source_domain`` or fails to load.
+    """
+    sub = context.new_page()
+    try:
+        try:
+            sub.goto(redirect_url, wait_until="domcontentloaded", timeout=12_000)
+        except Exception:
+            return ""
+        # HTTP 30x redirects are followed by goto itself, so sub.url may
+        # already be the final URL. Meta-refresh / JS redirects fire after
+        # DCL — wait briefly for the URL to change.
+        try:
+            sub.wait_for_url(
+                lambda u: u.rstrip("/") != redirect_url.rstrip("/"),
+                timeout=4_000,
+            )
+        except Exception:
+            pass
+        final = sub.url
+        try:
+            host = urlparse(final).netloc
+        except ValueError:
+            return ""
+        if host and host != source_domain:
+            return final
+        return ""
+    finally:
+        try:
+            sub.close()
+        except Exception:
+            pass
+
+
 def extract_website(page: Page, current_url: str) -> str:
-    """Find the 'visit website' link on a profile page, if present."""
+    """Find the 'visit website' link on a profile page, if present.
+
+    Returns an off-domain URL when one is linked directly. When the link
+    is on the same domain but looks like a redirect (``/gourl/...`` etc.,
+    common on directory sites), the redirect is followed in a sub-tab so
+    callers still get the real off-site URL.
+    """
     current_domain = urlparse(current_url).netloc
     candidate_selectors = [
         'a:has-text("Visit website")',
         'a:has-text("Website")',
         'a[aria-label*="website" i]',
+        'a[class*="website" i]',
         'a[rel*="nofollow"]',
     ]
+    redirect_candidate = ""
     for sel in candidate_selectors:
         try:
-            el = page.query_selector(sel)
-            if not el:
+            els = page.query_selector_all(sel)
+        except Exception:
+            els = []
+        for el in els:
+            try:
+                href = (el.get_attribute("href") or "").strip()
+            except Exception:
                 continue
-            href = (el.get_attribute("href") or "").strip()
-            if not href:
+            if not href or href.startswith("javascript:"):
                 continue
             full = urljoin(current_url, href)
-            host = urlparse(full).netloc
-            # Website links point off-domain.
+            try:
+                host = urlparse(full).netloc
+            except ValueError:
+                continue
             if host and host != current_domain:
                 return full
+            if not redirect_candidate and _looks_like_website_redirect(
+                full, current_domain,
+            ):
+                redirect_candidate = full
+    if redirect_candidate:
+        try:
+            return resolve_redirect_url(
+                page.context, redirect_candidate, current_domain,
+            )
         except Exception:
-            continue
+            return ""
     return ""
 
 
@@ -586,21 +679,30 @@ def scrape_profile_page(page: Page, url: str) -> Lead:
 CONTACT_PATHS = ("", "/contact", "/contact-us", "/contact/", "/about", "/about-us")
 
 
-def harvest_email_from_website(context, website: str) -> str:
-    """Open the lead's own website in a new tab and scrape for an email.
+@dataclass
+class WebsiteContact:
+    """Contact details extracted from a business's own website."""
 
-    Directory sites like yellowpages.ca rarely surface email addresses,
-    so for leads that do have a ``website`` we take one extra hop and
-    pull an email (either a ``mailto:`` link or the first body-regex
-    match) from the business's own homepage / contact page. Any error
-    yields ''.
+    email: str = ""
+    phone: str = ""
+
+
+def harvest_contact_from_website(context, website: str) -> WebsiteContact:
+    """Open the lead's own website in a new tab and pull email + phone.
+
+    Directory sites like yellowpages.ca rarely surface email addresses
+    and gate phones behind a click-to-reveal, so for leads that do have
+    a ``website`` we take one extra hop. We try the given URL plus a
+    handful of common ``/contact`` / ``/about`` variants and return as
+    soon as both fields are populated.
     """
+    out = WebsiteContact()
     try:
         parsed = urlparse(website)
     except ValueError:
-        return ""
+        return out
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return ""
+        return out
 
     root = f"{parsed.scheme}://{parsed.netloc}"
     candidates: list[str] = []
@@ -616,29 +718,49 @@ def harvest_email_from_website(context, website: str) -> str:
                 sub.goto(target, wait_until="domcontentloaded", timeout=12_000)
             except Exception:
                 continue
-            try:
-                mailto = sub.query_selector('a[href^="mailto:"]')
-                if mailto:
-                    raw = (mailto.get_attribute("href") or "")[len("mailto:"):]
-                    raw = raw.split("?", 1)[0].strip()
-                    cleaned = _clean_email(raw)
-                    if cleaned:
-                        return cleaned
-            except Exception:
-                pass
+            if not out.email:
+                try:
+                    mailto = sub.query_selector('a[href^="mailto:"]')
+                    if mailto:
+                        raw = (mailto.get_attribute("href") or "")[len("mailto:"):]
+                        raw = raw.split("?", 1)[0].strip()
+                        cleaned = _clean_email(raw)
+                        if cleaned:
+                            out.email = cleaned
+                except Exception:
+                    pass
+            if not out.phone:
+                try:
+                    tel = sub.query_selector('a[href^="tel:"]')
+                    if tel:
+                        raw = (tel.get_attribute("href") or "")[len("tel:"):].strip()
+                        digits = re.sub(r"\D", "", raw)
+                        if 10 <= len(digits) <= 15:
+                            out.phone = raw
+                except Exception:
+                    pass
             try:
                 body = sub.inner_text("body", timeout=3_000)
             except Exception:
-                continue
-            found = extract_emails(body)
-            if found:
-                return found
+                body = ""
+            if body:
+                if not out.email:
+                    out.email = extract_emails(body)
+                if not out.phone:
+                    out.phone = extract_phone(body)
+            if out.email and out.phone:
+                break
     finally:
         try:
             sub.close()
         except Exception:
             pass
-    return ""
+    return out
+
+
+def harvest_email_from_website(context, website: str) -> str:
+    """Backwards-compatible wrapper that returns just the email field."""
+    return harvest_contact_from_website(context, website).email
 
 
 def crawl(
@@ -663,13 +785,17 @@ def crawl(
 
         lead = scrape_profile_page(page, url)
         if lead.company_name:
-            if lead.website and not lead.email:
+            if lead.website and (not lead.email or not lead.phone):
                 try:
-                    lead.email = harvest_email_from_website(
+                    contact = harvest_contact_from_website(
                         page.context, lead.website,
                     )
                 except Exception:
-                    pass
+                    contact = WebsiteContact()
+                if not lead.email:
+                    lead.email = contact.email
+                if not lead.phone:
+                    lead.phone = contact.phone
             leads.append(lead)
             progress.update(
                 task_id,
