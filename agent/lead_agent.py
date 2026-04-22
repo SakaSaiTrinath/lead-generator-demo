@@ -387,11 +387,16 @@ def extract_website(page: Page, current_url: str) -> str:
 
 
 def scrape_profile_page(page: Page, url: str) -> Lead:
-    """Visit ``url`` and return a populated ``Lead``."""
+    """Visit ``url`` and return a populated ``Lead``.
+
+    Any navigation error (timeout, DNS failure, unsafe port, connection
+    refused, etc.) yields a Lead with just ``source_url`` set so the
+    caller's crawl loop can move on.
+    """
     lead = Lead(source_url=url)
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-    except PlaywrightTimeoutError:
+    except Exception:
         return lead
     polite_sleep(1.5, 2.5)
 
