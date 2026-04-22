@@ -86,10 +86,19 @@ SEARCH_PATH_HINTS = (
     "/categories/",
     "/listings/",
 )
+# yellowpages.ca-style category landing pages live at /business/<digits>.html
+# — they look like profile URLs to a SERP but render "Please enter your
+# search location" and a category name, not a real business.
+_CATEGORY_ID_URL_RE = re.compile(
+    r"/business/\d+\.html(?:$|[?#])",
+    re.IGNORECASE,
+)
 # h1/title text that indicates the page is a search-result or category
 # landing, not a real company profile.
 SEARCH_NAME_RE = re.compile(
-    r"\(\s*\d+\s+Result[a-zA-Z()\s]*\)|\bSearch\s+Results\b",
+    r"\(\s*\d+\s+Result[a-zA-Z()\s]*\)"
+    r"|\bSearch\s+Results\b"
+    r"|\bnear\s+(?:you|me)\b",
     re.IGNORECASE,
 )
 # Phrases on links that typically indicate a company-profile page.
@@ -436,7 +445,11 @@ def _extract_phone_from_page(page: Page, body_text: str) -> str:
 def _looks_like_search_page(url: str) -> bool:
     """True if the URL path/query looks like a site search or listing page."""
     low = url.lower()
-    return any(hint in low for hint in SEARCH_PATH_HINTS)
+    if any(hint in low for hint in SEARCH_PATH_HINTS):
+        return True
+    if _CATEGORY_ID_URL_RE.search(low):
+        return True
+    return False
 
 
 def extract_description(page: Page) -> str:

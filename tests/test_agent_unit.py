@@ -156,6 +156,9 @@ class TestLooksLikeSearchPage:
             "https://example.com/results/page/2",
             "https://example.com/category/animation",
             "https://example.com/listings/toronto",
+            # yellowpages.ca category-index landing (numeric-only path)
+            "https://www.yellowpages.ca/business/00885000.html",
+            "https://www.yellowpages.ca/business/12345.html?lang=en",
         ],
     )
     def test_truthy(self, url):
@@ -183,6 +186,9 @@ class TestSearchNameRe:
             "(12 Results)",
             "Animation Studios (3 results)",
             "Search Results for animation",
+            # yellowpages.ca category-landing h1s
+            "Film Studios & Producers near you",
+            "VFX Studios Near Me",
         ],
     )
     def test_matches(self, name):
