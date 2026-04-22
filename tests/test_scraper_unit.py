@@ -76,11 +76,28 @@ class TestLead:
         assert gms.FIELDS == [
             "company_name",
             "website",
+            "email",
             "phone",
             "address",
             "google_maps_url",
             "category",
         ]
+
+
+# ---------- email helpers ----------
+
+class TestEmailHelpers:
+    def test_clean_email_strips_blocklisted(self):
+        assert gms._clean_email("foo@example.com") == ""
+        assert gms._clean_email("logo@2x.png") == ""
+        assert gms._clean_email("hi@realstudio.com") == "hi@realstudio.com"
+
+    def test_extract_email_from_text_returns_first_credible(self):
+        text = "Contact logo@2x.png first, then hello@studio.io."
+        assert gms._extract_email_from_text(text) == "hello@studio.io"
+
+    def test_extract_email_from_text_none(self):
+        assert gms._extract_email_from_text("no email here") == ""
 
 
 # ---------- Polite sleep ----------

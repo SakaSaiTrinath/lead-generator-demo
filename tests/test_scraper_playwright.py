@@ -84,6 +84,36 @@ class TestScrollResults:
 
 # ---------- consent dismissal ----------
 
+class TestHarvestEmailFromWebsite:
+    def test_finds_mailto_link(self, browser, fixture_server):
+        context = browser.new_context(locale="en-US")
+        try:
+            email = gms.harvest_email_from_website(
+                context, f"{fixture_server}/business_home.html",
+            )
+        finally:
+            context.close()
+        assert email == "hello@pixelgrovefx.com"
+
+    def test_returns_empty_when_no_email(self, browser, fixture_server):
+        context = browser.new_context(locale="en-US")
+        try:
+            email = gms.harvest_email_from_website(
+                context, f"{fixture_server}/business_no_email.html",
+            )
+        finally:
+            context.close()
+        assert email == ""
+
+    def test_ignores_invalid_scheme(self, browser):
+        context = browser.new_context()
+        try:
+            assert gms.harvest_email_from_website(context, "file:///etc/passwd") == ""
+            assert gms.harvest_email_from_website(context, "not a url") == ""
+        finally:
+            context.close()
+
+
 class TestDismissConsent:
     def test_clicks_accept_button_when_present(self, page):
         page.set_content(

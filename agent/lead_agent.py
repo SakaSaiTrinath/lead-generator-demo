@@ -63,8 +63,34 @@ EMAIL_RE = re.compile(
     r"(?<![A-Za-z0-9._%+-])"
     r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
 )
+# Require an explicit phone shape: optional +CC or (NNN), then at least
+# one digit-group followed by a separator, then a final digit-group.
+# The looser previous pattern happily matched '200-1257' (a unit prefix in
+# an address) and '20260415.1822' (a timestamp). A post-match digit-count
+# filter in extract_phone() discards short/date-looking runs.
 PHONE_RE = re.compile(
-    r"(?:\+?\d{1,3}[\s\-.]?)?(?:\(?\d{2,4}\)?[\s\-.]?)?\d{3}[\s\-.]?\d{3,4}"
+    r"(?<!\d)"
+    r"(?:\+\d{1,3}[\s.\-]?|\(\d{2,4}\)[\s.\-]?)?"
+    r"(?:\d{2,4}[\s.\-])+\d{3,4}"
+    r"(?!\d)"
+)
+# Profile URLs often come back from SERPs alongside the site's own search /
+# result-list pages. Including a list page would create fake "companies".
+SEARCH_PATH_HINTS = (
+    "/search/",
+    "/search?",
+    "/find/",
+    "/results/",
+    "/browse/",
+    "/category/",
+    "/categories/",
+    "/listings/",
+)
+# h1/title text that indicates the page is a search-result or category
+# landing, not a real company profile.
+SEARCH_NAME_RE = re.compile(
+    r"\(\s*\d+\s+Result[a-zA-Z()\s]*\)|\bSearch\s+Results\b",
+    re.IGNORECASE,
 )
 # Phrases on links that typically indicate a company-profile page.
 PROFILE_LINK_HINTS = (
@@ -288,7 +314,10 @@ def collect_links(page: Page, domain: str | None, google_mode: bool) -> list[str
     """Collect outgoing links from the current page.
 
     When ``google_mode`` is True, return the organic result hrefs. Otherwise
-    return links whose path hints at a company profile.
+    return links whose path hints at a company profile. Search / listing
+    URLs (e.g. ``/search/si/...``) are dropped in both modes — they look
+    plausible to a SERP but scraping them as "companies" produces junk
+    rows like ``Animation Video To Image near Brampton ON (1 Result(s))``.
     """
     try:
         hrefs = page.eval_on_selector_all(
@@ -310,8 +339,12 @@ def collect_links(page: Page, domain: str | None, google_mode: bool) -> list[str
             real = _unwrap_search_redirect(href)
             if real is None:
                 continue
+            if _looks_like_search_page(real):
+                continue
             out.append(real)
         else:
+            if _looks_like_search_page(low):
+                continue
             parsed = urlparse(href)
             if domain and parsed.netloc and domain not in parsed.netloc:
                 continue
@@ -379,9 +412,31 @@ def extract_phone(text: str) -> str:
     """Return the first plausible phone number in ``text``, or ''."""
     for match in PHONE_RE.findall(text):
         digits = re.sub(r"\D", "", match)
-        if 7 <= len(digits) <= 15:
+        # Require at least 10 digits (NA/intl minimum) to reject address
+        # unit prefixes like "200-1257" and timestamp-looking runs.
+        if 10 <= len(digits) <= 15:
             return match.strip()
     return ""
+
+
+def _extract_phone_from_page(page: Page, body_text: str) -> str:
+    """Prefer ``a[href^='tel:']`` over regex to avoid address-number hits."""
+    try:
+        tel = page.query_selector('a[href^="tel:"]')
+        if tel:
+            raw = (tel.get_attribute("href") or "")[len("tel:"):].strip()
+            digits = re.sub(r"\D", "", raw)
+            if 10 <= len(digits) <= 15:
+                return raw
+    except Exception:
+        pass
+    return extract_phone(body_text)
+
+
+def _looks_like_search_page(url: str) -> bool:
+    """True if the URL path/query looks like a site search or listing page."""
+    low = url.lower()
+    return any(hint in low for hint in SEARCH_PATH_HINTS)
 
 
 def extract_description(page: Page) -> str:
@@ -466,9 +521,13 @@ def scrape_profile_page(page: Page, url: str) -> Lead:
 
     Any navigation error (timeout, DNS failure, unsafe port, connection
     refused, etc.) yields a Lead with just ``source_url`` set so the
-    caller's crawl loop can move on.
+    caller's crawl loop can move on. URLs that look like search / result
+    listing pages (``/search/...``) also yield an empty Lead so the
+    crawler skips them.
     """
     lead = Lead(source_url=url)
+    if _looks_like_search_page(url):
+        return lead
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
     except Exception:
@@ -480,10 +539,14 @@ def scrape_profile_page(page: Page, url: str) -> Lead:
     except Exception:
         body_text = ""
 
-    lead.company_name = extract_company_name(page)
+    name = extract_company_name(page)
+    if SEARCH_NAME_RE.search(name):
+        # Not a real profile — just a search/landing page header.
+        return lead
+    lead.company_name = name
     lead.website = extract_website(page, url)
     lead.email = extract_emails(body_text)
-    lead.phone = extract_phone(body_text)
+    lead.phone = _extract_phone_from_page(page, body_text)
     lead.description = extract_description(page)
 
     # Location: search for common address-like snippets.
@@ -505,6 +568,64 @@ def scrape_profile_page(page: Page, url: str) -> Lead:
             continue
     lead.location = loc
     return lead
+
+
+CONTACT_PATHS = ("", "/contact", "/contact-us", "/contact/", "/about", "/about-us")
+
+
+def harvest_email_from_website(context, website: str) -> str:
+    """Open the lead's own website in a new tab and scrape for an email.
+
+    Directory sites like yellowpages.ca rarely surface email addresses,
+    so for leads that do have a ``website`` we take one extra hop and
+    pull an email (either a ``mailto:`` link or the first body-regex
+    match) from the business's own homepage / contact page. Any error
+    yields ''.
+    """
+    try:
+        parsed = urlparse(website)
+    except ValueError:
+        return ""
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+
+    root = f"{parsed.scheme}://{parsed.netloc}"
+    candidates: list[str] = []
+    for path in CONTACT_PATHS:
+        target = website if path == "" else root + path
+        if target not in candidates:
+            candidates.append(target)
+
+    sub = context.new_page()
+    try:
+        for target in candidates:
+            try:
+                sub.goto(target, wait_until="domcontentloaded", timeout=12_000)
+            except Exception:
+                continue
+            try:
+                mailto = sub.query_selector('a[href^="mailto:"]')
+                if mailto:
+                    raw = (mailto.get_attribute("href") or "")[len("mailto:"):]
+                    raw = raw.split("?", 1)[0].strip()
+                    cleaned = _clean_email(raw)
+                    if cleaned:
+                        return cleaned
+            except Exception:
+                pass
+            try:
+                body = sub.inner_text("body", timeout=3_000)
+            except Exception:
+                continue
+            found = extract_emails(body)
+            if found:
+                return found
+    finally:
+        try:
+            sub.close()
+        except Exception:
+            pass
+    return ""
 
 
 def crawl(
@@ -529,6 +650,13 @@ def crawl(
 
         lead = scrape_profile_page(page, url)
         if lead.company_name:
+            if lead.website and not lead.email:
+                try:
+                    lead.email = harvest_email_from_website(
+                        page.context, lead.website,
+                    )
+                except Exception:
+                    pass
             leads.append(lead)
             progress.update(
                 task_id,

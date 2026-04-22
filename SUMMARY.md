@@ -21,6 +21,9 @@ lead-generator-demo/
 Searches Google Maps for `"<keyword> in <location>"`, scrolls the results
 feed until it has enough listings, then opens each card and extracts the
 business name, website, phone, address, Google Maps URL, and category.
+For each listing that has a website, the scraper also opens the business's
+own site in a second tab and pulls an email address from `mailto:` links
+or the homepage / contact page (Google Maps itself never exposes emails).
 Best for geographic prospecting of businesses that have claimed a Google
 Business profile (studios, agencies, production houses in a city).
 
@@ -30,9 +33,12 @@ An agentic crawler: it loads a directory or marketplace site (e.g.
 submit the keyword, and falls back to a Google `site:<domain> <keyword>`
 query if no search box is detectable. It then BFS-crawls links that look
 like company profiles up to 3 levels deep, extracting name, website,
-email (via regex), phone (via regex), location, and a 200-char
-description. Best for directory-style sources that surface contact info
-Google Maps doesn't.
+email (via regex), phone (from `tel:` links, then regex), location, and
+a 200-char description. When a profile lists a company website but no
+email, the agent takes one extra hop to that site and pulls an email
+from there. Search / result-list URLs are filtered out so directory
+search pages aren't scraped as if they were companies. Best for
+directory-style sources that surface contact info Google Maps doesn't.
 
 ---
 
@@ -135,6 +141,7 @@ Both tools write CSVs under `output/` with a timestamped filename.
 | ----------------- | ------------------------------------ |
 | `company_name`    | `Pixel Grove VFX`                    |
 | `website`         | `https://pixelgrovefx.com`           |
+| `email`           | `hello@pixelgrovefx.com`             |
 | `phone`           | `+1 416-555-0134`                    |
 | `address`         | `123 King St W, Toronto, ON M5V 1J2` |
 | `google_maps_url` | `https://www.google.com/maps/place/…`|

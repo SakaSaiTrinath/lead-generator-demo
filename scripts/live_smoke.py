@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = ROOT / "output"
 
 SCRAPER_FIELDS = [
-    "company_name", "website", "phone", "address",
+    "company_name", "website", "email", "phone", "address",
     "google_maps_url", "category",
 ]
 AGENT_FIELDS = [
@@ -214,8 +214,14 @@ def run_agent(
 CHECKLIST = """
   [ ] The scraper CSV has a real company_name for every row
   [ ] At least one row has a website, phone, or address populated
+  [ ] At least one scraper row has a real email harvested from the
+      business website (some sites will have no public email — OK)
   [ ] google_maps_url points at a real /maps/place/ link
   [ ] The agent CSV has at least one row with an email (or explain why not)
+  [ ] No agent row's "phone" looks like a unit prefix (e.g. "200-1257")
+      or a timestamp
+  [ ] No agent row's "company_name" contains "Result(s)" or similar
+      search-page header text
   [ ] Descriptions look like real about-text, not nav/footer noise
   [ ] Re-running with a different --location yields different companies
 """

@@ -115,6 +115,72 @@ class TestCollectLinks:
         assert not any("google.com" in l for l in links)
 
 
+class TestCollectLinksFiltersSearchPages:
+    def test_drops_search_path_links(self, page):
+        """Regression: DDG/Google sometimes return YP's own search pages.
+
+        Those pages produce junk "companies" like
+        ``Animation Video To Image near Brampton ON (1 Result(s))`` when
+        crawled, so they must be filtered out of the seed list.
+        """
+        page.set_content(
+            """
+            <html><body>
+              <a href="https://www.yellowpages.ca/bus/ON/Toronto/Studio/1.html">Real</a>
+              <a href="https://www.yellowpages.ca/search/si/1/animation/Toronto">Search</a>
+              <a href="https://www.google.com/url?q=https://www.yellowpages.ca/search/si/2/x/y&sa=U">Wrapped search</a>
+            </body></html>
+            """
+        )
+        direct = agent.collect_links(page, domain="yellowpages.ca", google_mode=False)
+        assert not any("/search/" in l for l in direct)
+
+        via_serp = agent.collect_links(page, domain=None, google_mode=True)
+        assert not any("/search/" in l for l in via_serp)
+
+
+class TestHarvestEmailFromWebsite:
+    def test_finds_mailto(self, browser, fixture_server):
+        context = browser.new_context(locale="en-US")
+        try:
+            email = agent.harvest_email_from_website(
+                context, f"{fixture_server}/business_home.html",
+            )
+        finally:
+            context.close()
+        assert email == "hello@pixelgrovefx.com"
+
+    def test_returns_empty_when_no_email(self, browser, fixture_server):
+        context = browser.new_context(locale="en-US")
+        try:
+            email = agent.harvest_email_from_website(
+                context, f"{fixture_server}/business_no_email.html",
+            )
+        finally:
+            context.close()
+        assert email == ""
+
+    def test_ignores_invalid_scheme(self, browser):
+        context = browser.new_context()
+        try:
+            assert agent.harvest_email_from_website(context, "file:///etc") == ""
+            assert agent.harvest_email_from_website(context, "garbage") == ""
+        finally:
+            context.close()
+
+
+class TestScrapeProfilePageSkipsSearchPages:
+    def test_search_url_returns_empty_lead(self, page, monkeypatch):
+        """A /search/ URL must never be opened and must yield an empty lead."""
+        monkeypatch.setattr(agent, "polite_sleep", lambda *a, **kw: None)
+        lead = agent.scrape_profile_page(
+            page,
+            "https://yellowpages.ca/search/si/1/animation/Toronto",
+        )
+        assert lead.company_name == ""
+        assert lead.source_url == "https://yellowpages.ca/search/si/1/animation/Toronto"
+
+
 class TestUnwrapSearchRedirect:
     def test_unwraps_google_q_param(self):
         assert agent._unwrap_search_redirect(

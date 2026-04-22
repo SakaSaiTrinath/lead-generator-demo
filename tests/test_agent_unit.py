@@ -124,9 +124,80 @@ class TestExtractPhone:
         assert agent.extract_phone("no digits at all") == ""
 
     def test_rejects_short_runs(self):
-        # Fewer than 7 digits — should not be returned.
-        assert agent.extract_phone("code 123 456") == "" or \
-               len(agent.extract_phone("code 123 456").replace(" ", "").replace("-", "")) >= 7
+        # Fewer than 10 digits — should not be returned.
+        assert agent.extract_phone("code 123 456") == ""
+
+    def test_rejects_address_unit_prefix(self):
+        """Regression: '200-1257 Rue Guy' must not yield a phone.
+
+        The earlier regex + 7-digit floor happily matched '200-1257'
+        (the unit prefix on a Montréal address) as if it were a phone.
+        """
+        assert agent.extract_phone(
+            "200-1257 Rue Guy, Montréal, QC H3H 2K5"
+        ) == ""
+
+    def test_rejects_timestamp_looking_runs(self):
+        """Regression: '20260415.1822' must not be treated as a phone."""
+        assert agent.extract_phone(
+            "ref 20260415.1822 build id"
+        ) == ""
+
+
+# ---------- _looks_like_search_page ----------
+
+class TestLooksLikeSearchPage:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.yellowpages.ca/search/si/1/animation+studio/Toronto+ON",
+            "https://clutch.co/search?q=animation",
+            "https://example.com/find/vfx",
+            "https://example.com/results/page/2",
+            "https://example.com/category/animation",
+            "https://example.com/listings/toronto",
+        ],
+    )
+    def test_truthy(self, url):
+        assert agent._looks_like_search_page(url) is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://www.yellowpages.ca/bus/Ontario/Toronto/Pixel-Grove/123.html",
+            "https://clutch.co/profile/northern-lights-animation",
+            "https://studio.example/about",
+        ],
+    )
+    def test_falsy(self, url):
+        assert agent._looks_like_search_page(url) is False
+
+
+# ---------- SEARCH_NAME_RE ----------
+
+class TestSearchNameRe:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Animation Video To Image near Brampton ON (1 Result(s))",
+            "(12 Results)",
+            "Animation Studios (3 results)",
+            "Search Results for animation",
+        ],
+    )
+    def test_matches(self, name):
+        assert agent.SEARCH_NAME_RE.search(name) is not None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Northern Lights Animation",
+            "Pixel Grove VFX",
+            "Studio 4 (Toronto)",
+        ],
+    )
+    def test_non_matches(self, name):
+        assert agent.SEARCH_NAME_RE.search(name) is None
 
 
 # ---------- Lead dataclass / FIELDS ----------

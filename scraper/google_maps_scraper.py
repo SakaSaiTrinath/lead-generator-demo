@@ -14,14 +14,17 @@ from __future__ import annotations
 import argparse
 import csv
 import random
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.sync_api import (
     Browser,
+    BrowserContext,
     Page,
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
@@ -38,11 +41,35 @@ OUTPUT_DIR = PROJECT_ROOT / "output"
 FIELDS = [
     "company_name",
     "website",
+    "email",
     "phone",
     "address",
     "google_maps_url",
     "category",
 ]
+
+EMAIL_RE = re.compile(
+    r"(?<![A-Za-z0-9._%+-])"
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"
+)
+EMAIL_BLOCKLIST = (
+    "sentry.io",
+    "wixpress.com",
+    "example.com",
+    "example.org",
+    "domain.com",
+    "email.com",
+    "yourdomain",
+    "your-email",
+    "name@",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".webp",
+)
+CONTACT_PATHS = ("", "/contact", "/contact-us", "/contact/", "/about", "/about-us")
 
 console = Console()
 
@@ -53,6 +80,7 @@ class Lead:
 
     company_name: str = ""
     website: str = ""
+    email: str = ""
     phone: str = ""
     address: str = ""
     google_maps_url: str = ""
@@ -230,6 +258,76 @@ def extract_lead_from_detail(page: Page, maps_url: str) -> Lead:
     return lead
 
 
+def _clean_email(raw: str) -> str:
+    """Filter obviously-bad emails (tracking, image file names, etc.)."""
+    low = raw.lower()
+    if any(bad in low for bad in EMAIL_BLOCKLIST):
+        return ""
+    return raw
+
+
+def _extract_email_from_text(text: str) -> str:
+    """Return the first credible email in ``text``, or ''."""
+    for match in EMAIL_RE.findall(text):
+        cleaned = _clean_email(match)
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def harvest_email_from_website(context: BrowserContext, website: str) -> str:
+    """Open the business website in a new tab and scrape it for an email.
+
+    Tries the given URL, then a few common contact/about paths. Prefers
+    ``mailto:`` links but falls back to a regex scan of the body. Any
+    timeout or navigation error yields ''.
+    """
+    try:
+        parsed = urlparse(website)
+    except ValueError:
+        return ""
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return ""
+
+    root = f"{parsed.scheme}://{parsed.netloc}"
+    candidates: list[str] = []
+    for path in CONTACT_PATHS:
+        target = website if path == "" else root + path
+        if target not in candidates:
+            candidates.append(target)
+
+    sub = context.new_page()
+    try:
+        for target in candidates:
+            try:
+                sub.goto(target, wait_until="domcontentloaded", timeout=12_000)
+            except Exception:
+                continue
+            try:
+                mailto = sub.query_selector('a[href^="mailto:"]')
+                if mailto:
+                    raw = (mailto.get_attribute("href") or "")[len("mailto:"):]
+                    raw = raw.split("?", 1)[0].strip()
+                    cleaned = _clean_email(raw)
+                    if cleaned:
+                        return cleaned
+            except Exception:
+                pass
+            try:
+                body = sub.inner_text("body", timeout=3_000)
+            except Exception:
+                continue
+            found = _extract_email_from_text(body)
+            if found:
+                return found
+    finally:
+        try:
+            sub.close()
+        except Exception:
+            pass
+    return ""
+
+
 def collect_result_cards(page: Page, max_results: int) -> list:
     """Return up to ``max_results`` clickable result-card handles."""
     feed = page.query_selector('div[role="feed"]')
@@ -295,8 +393,19 @@ def scrape(keyword: str, location: str, max_results: int, headless: bool) -> lis
                 maps_url = page.url
                 lead = extract_lead_from_detail(page, maps_url)
                 if lead.company_name:
+                    if lead.website:
+                        try:
+                            lead.email = harvest_email_from_website(
+                                context, lead.website,
+                            )
+                        except Exception as harvest_exc:
+                            console.log(
+                                f"[yellow]email harvest failed for "
+                                f"{lead.company_name}: {harvest_exc!s}[/yellow]"
+                            )
                     leads.append(lead)
-                    console.log(f"[green]✓[/green] ({idx}) {lead.company_name}")
+                    email_tag = f" [{lead.email}]" if lead.email else ""
+                    console.log(f"[green]✓[/green] ({idx}) {lead.company_name}{email_tag}")
                 else:
                     console.log(f"[yellow]skip[/yellow] ({idx}) no name extracted")
             except Exception as exc:
